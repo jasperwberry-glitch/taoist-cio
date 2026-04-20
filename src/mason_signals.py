@@ -16,10 +16,16 @@ import logging
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
-import pandas_ta as ta
 from rich.console import Console
 from rich.table import Table
+
+try:
+    import pandas_ta as _pta
+    PANDAS_TA_AVAILABLE = True
+except ImportError:
+    PANDAS_TA_AVAILABLE = False
 
 # ── Paths / logging ────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
@@ -70,7 +76,10 @@ def _pullback_pct(current: float, high: float) -> float:
 def _sma(s: pd.Series, length: int) -> float | None:
     if s is None or len(s) < length:
         return None
-    result = ta.sma(s, length=length)
+    if PANDAS_TA_AVAILABLE:
+        result = _pta.sma(s, length=length)
+    else:
+        result = s.rolling(window=length).mean()
     if result is None or result.dropna().empty:
         return None
     return float(result.dropna().iloc[-1])
@@ -79,7 +88,16 @@ def _sma(s: pd.Series, length: int) -> float | None:
 def _rsi(s: pd.Series, length: int = 14) -> float | None:
     if s is None or len(s) < length + 1:
         return None
-    result = ta.rsi(s, length=length)
+    if PANDAS_TA_AVAILABLE:
+        result = _pta.rsi(s, length=length)
+    else:
+        delta    = s.diff()
+        gain     = delta.clip(lower=0)
+        loss     = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
+        rs       = avg_gain / avg_loss.replace(0, np.nan)
+        result   = 100 - (100 / (1 + rs))
     if result is None or result.dropna().empty:
         return None
     return float(result.dropna().iloc[-1])

@@ -10,10 +10,82 @@ import logging
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
-import pandas_ta as ta
 from rich.console import Console
 from rich.table import Table
+
+try:
+    import pandas_ta as ta
+    PANDAS_TA_AVAILABLE = True
+except ImportError:
+    PANDAS_TA_AVAILABLE = False
+
+
+# ── Pure-pandas/numpy indicator fallbacks ─────────────────────────────────────
+
+def _sma(series: pd.Series, length: int) -> pd.Series:
+    if PANDAS_TA_AVAILABLE:
+        return series.ta.sma(length=length)
+    return series.rolling(window=length).mean()
+
+
+def _rsi_calc(series: pd.Series, length: int = 14) -> pd.Series:
+    if PANDAS_TA_AVAILABLE:
+        return series.ta.rsi(length=length)
+    delta = series.diff()
+    gain  = delta.clip(lower=0)
+    loss  = -delta.clip(upper=0)
+    # Wilder smoothing (same as pandas_ta)
+    avg_gain = gain.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+
+def _macd_calc(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
+    if PANDAS_TA_AVAILABLE:
+        return series.ta.macd(fast=fast, slow=slow, signal=signal)
+    ema_fast   = series.ewm(span=fast,   adjust=False).mean()
+    ema_slow   = series.ewm(span=slow,   adjust=False).mean()
+    macd_line  = ema_fast - ema_slow
+    sig_line   = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram  = macd_line - sig_line
+    return pd.DataFrame({
+        f"MACD_{fast}_{slow}_{signal}":  macd_line,
+        f"MACDs_{fast}_{slow}_{signal}": sig_line,
+        f"MACDh_{fast}_{slow}_{signal}": histogram,
+    }, index=series.index)
+
+
+def _bbands_calc(series: pd.Series, length: int = 20, std: float = 2.0) -> pd.DataFrame:
+    if PANDAS_TA_AVAILABLE:
+        return series.ta.bbands(length=length, std=std)
+    sma   = series.rolling(window=length).mean()
+    stdev = series.rolling(window=length).std(ddof=0)
+    bbu   = sma + std * stdev
+    bbl   = sma - std * stdev
+    bbp   = (series - bbl) / (bbu - bbl).replace(0, np.nan)
+    key   = f"{length}_{std}"
+    return pd.DataFrame({
+        f"BBL_{key}": bbl,
+        f"BBM_{key}": sma,
+        f"BBU_{key}": bbu,
+        f"BBP_{key}": bbp,
+    }, index=series.index)
+
+
+def _atr_calc(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    if PANDAS_TA_AVAILABLE:
+        return df.ta.atr(length=length)
+    high, low, close = df["High"], df["Low"], df["Close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
 
 # ── Paths / logging ────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
@@ -233,9 +305,9 @@ def analyze_ticker(ticker: str, df: pd.DataFrame) -> dict:
         result["price"] = price
 
         # ── Moving Averages ────────────────────────────────────────────────────
-        ma20  = _last(df.ta.sma(length=20))
-        ma50  = _last(df.ta.sma(length=50))
-        ma200 = _last(df.ta.sma(length=200))
+        ma20  = _last(_sma(df["Close"], 20))
+        ma50  = _last(_sma(df["Close"], 50))
+        ma200 = _last(_sma(df["Close"], 200))
 
         result["ma"] = {
             "ma20":       ma20,
@@ -248,12 +320,12 @@ def analyze_ticker(ticker: str, df: pd.DataFrame) -> dict:
         }
 
         # ── RSI ────────────────────────────────────────────────────────────────
-        rsi_val = _last(df.ta.rsi(length=14))
+        rsi_val = _last(_rsi_calc(df["Close"], length=14))
         rsi_class = _classify_rsi(rsi_val)
         result["rsi"] = {"value": rsi_val, "classification": rsi_class}
 
         # ── MACD ───────────────────────────────────────────────────────────────
-        macd_df   = df.ta.macd(fast=12, slow=26, signal=9)
+        macd_df   = _macd_calc(df["Close"], fast=12, slow=26, signal=9)
         macd_line = macd_df["MACD_12_26_9"]
         sig_line  = macd_df["MACDs_12_26_9"]
         macd_class = _classify_macd(macd_line, sig_line)
@@ -265,11 +337,12 @@ def analyze_ticker(ticker: str, df: pd.DataFrame) -> dict:
         }
 
         # ── Bollinger Bands ────────────────────────────────────────────────────
-        bb_df = df.ta.bbands(length=20, std=2)
-        bbl   = _last(bb_df["BBL_20_2.0_2.0"])
-        bbm   = _last(bb_df["BBM_20_2.0_2.0"])
-        bbu   = _last(bb_df["BBU_20_2.0_2.0"])
-        bbp   = _last(bb_df["BBP_20_2.0_2.0"])   # percent-B
+        bb_df = _bbands_calc(df["Close"], length=20, std=2.0)
+        _bb_key = "20_2.0" if not PANDAS_TA_AVAILABLE else "20_2.0_2.0"
+        bbl   = _last(bb_df[f"BBL_{_bb_key}"])
+        bbm   = _last(bb_df[f"BBM_{_bb_key}"])
+        bbu   = _last(bb_df[f"BBU_{_bb_key}"])
+        bbp   = _last(bb_df[f"BBP_{_bb_key}"])   # percent-B
         bb_class = _classify_bbands(price, bbl, bbm, bbu)
         result["bbands"] = {
             "lower":          bbl,
@@ -280,7 +353,7 @@ def analyze_ticker(ticker: str, df: pd.DataFrame) -> dict:
         }
 
         # ── ATR ────────────────────────────────────────────────────────────────
-        atr_val = _last(df.ta.atr(length=14))
+        atr_val = _last(_atr_calc(df, length=14))
         result["atr"] = {
             "value":   atr_val,
             "pct":     round(atr_val / price * 100, 2) if atr_val and price else None,

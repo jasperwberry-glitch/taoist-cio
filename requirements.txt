@@ -1,6 +1,5 @@
 yfinance
 pandas
-pandas-ta
 numpy
 streamlit
 rich
