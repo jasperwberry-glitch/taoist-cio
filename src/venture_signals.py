@@ -29,11 +29,15 @@ ROOT = Path(__file__).parent.parent
 DATA_DIR = ROOT / "data"
 LOGS_DIR = ROOT / "logs"
 
-logging.basicConfig(
-    filename=LOGS_DIR / "venture.log",
-    level=logging.ERROR,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
+try:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=LOGS_DIR / "venture.log",
+        level=logging.ERROR,
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    )
+except (OSError, PermissionError):
+    logging.basicConfig(level=logging.ERROR)
 log = logging.getLogger(__name__)
 console = Console()
 
@@ -94,6 +98,8 @@ def _save_json(path: Path, data) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         with path.open("w") as f:
             json.dump(data, f, indent=2, default=str)
+    except (OSError, PermissionError):
+        pass  # read-only filesystem — skip persistence
     except Exception as e:
         log.error(f"JSON write failed {path}: {e}")
 

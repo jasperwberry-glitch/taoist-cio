@@ -24,11 +24,15 @@ CACHE_FILE = DATA_DIR / "market_cache.json"
 CACHE_TTL_MINUTES = 15
 
 # ── Logging ────────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    filename=LOGS_DIR / "data_feed.log",
-    level=logging.ERROR,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
+try:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=LOGS_DIR / "data_feed.log",
+        level=logging.ERROR,
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    )
+except (OSError, PermissionError):
+    logging.basicConfig(level=logging.ERROR)
 log = logging.getLogger(__name__)
 
 console = Console()
@@ -107,7 +111,7 @@ def _deserialize_ohlcv(raw: dict) -> dict[str, pd.DataFrame]:
 
 
 def _save_cache(ohlcv: dict[str, pd.DataFrame]) -> None:
-    """Write OHLCV data + timestamp to CACHE_FILE."""
+    """Write OHLCV data + timestamp to CACHE_FILE. Silently skipped if fs is read-only."""
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -116,6 +120,8 @@ def _save_cache(ohlcv: dict[str, pd.DataFrame]) -> None:
         }
         with CACHE_FILE.open("w") as f:
             json.dump(payload, f)
+    except (OSError, PermissionError):
+        pass  # read-only filesystem (e.g. Streamlit Cloud) — skip caching
     except Exception as e:
         log.error(f"Cache write failed: {e}")
 

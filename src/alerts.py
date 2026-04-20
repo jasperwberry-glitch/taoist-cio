@@ -44,10 +44,13 @@ _file_log = logging.getLogger("taoist_alerts")
 _file_log.setLevel(logging.DEBUG)
 _file_log.propagate = False   # don't bubble to root logger
 if not _file_log.handlers:
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    _fh = logging.FileHandler(LOGS_DIR / "alerts.log")
-    _fh.setFormatter(logging.Formatter("%(message)s"))
-    _file_log.addHandler(_fh)
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        _fh = logging.FileHandler(LOGS_DIR / "alerts.log")
+        _fh.setFormatter(logging.Formatter("%(message)s"))
+        _file_log.addHandler(_fh)
+    except (OSError, PermissionError):
+        _file_log.addHandler(logging.StreamHandler())
 
 # ── Level styles ───────────────────────────────────────────────────────────────
 LEVEL_STYLE = {
@@ -84,6 +87,8 @@ def _save_state(state: dict) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         with STATE_FILE.open("w") as f:
             json.dump(state, f, indent=2, default=str)
+    except (OSError, PermissionError):
+        pass  # read-only filesystem — state won't persist between runs
     except Exception as e:
         console.print(f"[red]Failed to save state: {e}[/red]")
 
@@ -401,7 +406,10 @@ def log_alerts(alerts: list[dict]) -> None:
         console.print("[dim]Alert check complete — no changes detected.[/dim]")
         return
 
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    except (OSError, PermissionError):
+        pass
 
     # ── Write to file (via named logger, not root) ────────────────────────────
     for a in alerts:

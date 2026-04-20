@@ -36,11 +36,15 @@ from rich.text import Text
 
 # ── Paths / logging ────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
-logging.basicConfig(
-    filename=ROOT / "logs" / "integration.log",
-    level=logging.ERROR,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
+try:
+    (ROOT / "logs").mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=ROOT / "logs" / "integration.log",
+        level=logging.ERROR,
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    )
+except (OSError, PermissionError):
+    logging.basicConfig(level=logging.ERROR)
 log = logging.getLogger(__name__)
 console = Console()
 

@@ -687,8 +687,11 @@ def render_outlook():
     st.markdown("## 7 — Outlook")
 
     existing = ""
-    if OUTLOOK_FILE.exists():
-        existing = OUTLOOK_FILE.read_text().strip()
+    try:
+        if OUTLOOK_FILE.exists():
+            existing = OUTLOOK_FILE.read_text().strip()
+    except (OSError, PermissionError):
+        pass
 
     if existing:
         st.markdown("**Current saved outlook:**")
@@ -707,9 +710,12 @@ def render_outlook():
     )
 
     if st.button("💾 Save Outlook"):
-        OUTLOOK_FILE.parent.mkdir(parents=True, exist_ok=True)
-        OUTLOOK_FILE.write_text(new_text.strip())
-        st.success("Outlook saved to data/layer5_outlook.txt")
+        try:
+            OUTLOOK_FILE.parent.mkdir(parents=True, exist_ok=True)
+            OUTLOOK_FILE.write_text(new_text.strip())
+            st.success("Outlook saved to data/layer5_outlook.txt")
+        except (OSError, PermissionError):
+            st.warning("Cannot save to disk on this environment — copy your text locally to preserve it.")
 
 
 def render_footer():
