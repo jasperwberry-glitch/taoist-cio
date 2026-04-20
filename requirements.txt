@@ -1,0 +1,10 @@
+yfinance
+pandas
+pandas-ta
+numpy
+streamlit
+rich
+python-dotenv
+requests
+beautifulsoup4
+plotly
