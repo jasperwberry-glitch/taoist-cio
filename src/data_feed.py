@@ -53,6 +53,7 @@ TICKERS: dict[str, list[str]] = {
     "WATER_UTILITY":    ["AWK"],
     "WATER_ETF":        ["CGW"],
     "INTERNATIONAL":    ["EFA"],
+    "BREADTH":          ["RSP"],
     "CREDIT":           ["HYG", "LQD"],
     "MACRO":            ["^TNX", "DX-Y.NYB", "^VIX", "BZ=F", "GC=F", "SI=F", "HG=F"],
     "SENTIMENT":        ["^PCALL"],

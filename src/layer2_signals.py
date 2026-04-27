@@ -400,6 +400,61 @@ def _sput_nav_premium(premium_pct: float | None) -> dict:
     )
 
 
+def _rsp_spy_breadth(data: dict) -> dict:
+    """
+    RSP/SPY Ratio (Market Breadth)
+    RSP = equal-weight S&P 500; SPY = cap-weight S&P 500.
+    Rising ratio → broad participation (GREEN).
+    Falling ratio → narrow mega-cap leadership (RED).
+    """
+    name  = "RSP/SPY Ratio (Market Breadth)"
+    ratio = _ratio_series(data, "RSP", "SPY")
+    if ratio is None or len(ratio) < 10:
+        return _make_signal(
+            name, "N/A", "current vs 50-day avg", "N/A",
+            "RSP or SPY data unavailable",
+        )
+
+    current = float(ratio.iloc[-1])
+    ma50    = float(ratio.tail(50).mean()) if len(ratio) >= 50 else float(ratio.mean())
+    pct_vs_avg = (current - ma50) / ma50 * 100
+
+    chg_90d = _pct_change_n_days(ratio, 90)
+    trend_90 = (
+        f"rising ({chg_90d:+.2f}% over 90d)" if (chg_90d or 0) > 0
+        else f"falling ({chg_90d:+.2f}% over 90d)" if chg_90d is not None
+        else "trend unavailable"
+    )
+
+    if current > ma50:
+        status  = "GREEN"
+        reading = "BROAD"
+        interp  = (
+            f"RSP/SPY ratio {current:.4f} is {pct_vs_avg:+.2f}% above its 50-day avg — "
+            f"broad participation, average stock contributing. 90-day trend: {trend_90}. "
+            "RSP/SPY rising = healthy rally breadth."
+        )
+    else:
+        status  = "RED"
+        reading = "NARROW"
+        interp  = (
+            f"RSP/SPY ratio {current:.4f} is {pct_vs_avg:+.2f}% below its 50-day avg — "
+            f"narrow mega-cap leadership, fragile rally. 90-day trend: {trend_90}. "
+            "RSP/SPY falling = concentration risk, few stocks driving index."
+        )
+
+    return _make_signal(
+        name, reading,
+        "current vs 50-day avg of ratio",
+        status, interp,
+        {
+            "ratio":      round(current, 6),
+            "ma50":       round(ma50, 6),
+            "90d_trend":  trend_90,
+        },
+    )
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def get_layer2_signals(
@@ -428,6 +483,7 @@ def get_layer2_signals(
         ("put_call",          lambda: _put_call_ratio(data)),
         ("gold_oil",          lambda: _gold_oil_ratio(data)),
         ("sput_nav",          lambda: _sput_nav_premium(sput_nav_premium)),
+        ("rsp_spy_breadth",   lambda: _rsp_spy_breadth(data)),
     ]
     for key, fn in runners:
         try:
