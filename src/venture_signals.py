@@ -76,6 +76,43 @@ EDGAR_CACHE_TTL_HOURS  = 1
 FORGE_ALERT_THRESHOLD  = 0.10   # 10% move triggers alert
 ANTHROPIC_STALE_DAYS   = 30
 
+# ── Hardcoded baseline data ────────────────────────────────────────────────────
+# Used on Streamlit Cloud and any cold-start where JSON cache files don't exist.
+
+_FORGE_BASELINE: dict = {
+    "current_price":    608.15,
+    "last_updated":     "April 6, 2026",
+    "change_from_last": None,
+    "pct_change":       None,
+    "alert":            False,
+    "stale":            True,
+    "stale_reason":     "Cache file not present — using hardcoded baseline",
+    "history_length":   0,
+    "source":           "baseline_hardcoded",
+    "ipo_target":       "mid-June 2026",
+    "status_note":      "Pre-IPO — S-1 not yet filed",
+}
+
+_ANTHROPIC_BASELINE: dict = {
+    "last_known_hiive_price": 525.37,
+    "last_known_arr":         19_000_000_000,
+    "claude_code_arr":        2_500_000_000,
+    "valuation_range":        "$350-380B",
+    "ipo_target":             "2026-2027",
+    "last_verified":          "2026-04-01",
+    "age_days":               28,
+    "needs_update":           False,
+    "status_note":            "Pre-IPO",
+}
+
+_PIPELINE_DEFAULTS: dict[str, str] = {
+    "SpaceX":     "Pre-IPO — S-1 not yet filed. IPO target: mid-June 2026",
+    "Anthropic":  "Pre-IPO — ARR $19B. IPO target: 2026-2027",
+    "OpenAI":     "2027 target — CFO Sarah Friar leading process",
+    "Databricks": "$134B valuation — 'when not if'",
+    "Stripe":     "2027+ — founders signaling no urgency",
+}
+
 
 # ── Utility helpers ────────────────────────────────────────────────────────────
 
@@ -357,6 +394,10 @@ def get_spacex_forge_price() -> dict:
         and abs(change_pct) >= FORGE_ALERT_THRESHOLD * 100
     )
 
+    # Fall back to hardcoded baseline when no price is available at all
+    if current_price is None:
+        return _FORGE_BASELINE
+
     return {
         "current_price":    current_price,
         "last_updated":     current_ts,
@@ -367,6 +408,8 @@ def get_spacex_forge_price() -> dict:
         "stale_reason":     scrape_error if stale else None,
         "history_length":   len(history),
         "source":           "cached_manual" if stale else "forgeglobal.com",
+        "ipo_target":       "",
+        "status_note":      "",
     }
 
 
@@ -382,10 +425,7 @@ def get_anthropic_status() -> dict:
     """
     data = _load_json(ANTHROPIC_FILE)
     if not data:
-        return {
-            "error":        "anthropic_status.json not found",
-            "needs_update": True,
-        }
+        return _ANTHROPIC_BASELINE
 
     try:
         verified_dt  = datetime.strptime(data["last_verified"], "%Y-%m-%d").date()
@@ -501,13 +541,21 @@ def get_venture_signals(data_dict: dict | None = None) -> dict:
             "message":  f"SpaceX Forge price moved {forge.get('pct_change',0):+.1f}%",
         })
 
+    # Attach cloud EDGAR note when the cache file is absent (no local storage)
+    if not EDGAR_CACHE_FILE.exists():
+        edgar.setdefault(
+            "status_note",
+            "Not monitored on cloud — run alerts locally for live S-1 detection",
+        )
+
     return {
-        "edgar":         edgar,
-        "spacex_forge":  forge,
-        "anthropic":     anthropic,
-        "ji_moment":     ji,
-        "wu_wei_entry":  wu_wei_entries,
-        "alerts":        alerts,
+        "edgar":             edgar,
+        "spacex_forge":      forge,
+        "anthropic":         anthropic,
+        "ji_moment":         ji,
+        "wu_wei_entry":      wu_wei_entries,
+        "alerts":            alerts,
+        "pipeline_defaults": _PIPELINE_DEFAULTS,
     }
 
 

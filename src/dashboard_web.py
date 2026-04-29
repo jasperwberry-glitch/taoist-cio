@@ -6,7 +6,7 @@ Web-based equivalent of dashboard.py. Run with:
 """
 
 import sys
-from datetime import datetime
+from datetime import datetime, date as _date
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -64,6 +64,37 @@ VERDICT_COLOR = {
 
 OUTLOOK_FILE = ROOT / "data" / "layer5_outlook.txt"
 
+# Timeframe → approximate trading days
+_TF_OPTIONS = ["1D", "5D", "30D", "90D", "YTD", "1Y", "5Y", "Max"]
+_TF_DEFAULT = "90D"
+
+
+def _timeframe_days(tf: str) -> int | None:
+    """Return number of calendar days for the timeframe, or None for Max."""
+    if tf == "1D":   return 1
+    if tf == "5D":   return 5
+    if tf == "30D":  return 30
+    if tf == "90D":  return 90
+    if tf == "YTD":
+        today = _date.today()
+        return (today - _date(today.year, 1, 1)).days + 1
+    if tf == "1Y":   return 365
+    if tf == "5Y":   return 1825
+    return None  # Max
+
+
+def _fs_writable() -> bool:
+    """Return True if the data directory is writable (local env)."""
+    try:
+        OUTLOOK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        test = OUTLOOK_FILE.parent / ".write_test"
+        test.write_text("x")
+        test.unlink()
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
 # ── Data loading (cached) ──────────────────────────────────────────────────────
 
 @st.cache_data(ttl=900)
@@ -71,7 +102,6 @@ def load_all_data():
     data      = get_all_data()
     prices    = get_current_prices(data=data)
     tech      = analyze_all(data)
-    # Merge price info into tech for convenience
     for ticker, info in prices.items():
         if ticker in tech:
             tech[ticker]["price"]      = info.get("price")
@@ -88,7 +118,6 @@ def load_all_data():
 # ── Colour helpers ─────────────────────────────────────────────────────────────
 
 def _colored_badge(text: str, color: str) -> str:
-    """Return an HTML badge span."""
     return (
         f'<span style="background:{color};color:#fff;padding:2px 8px;'
         f'border-radius:4px;font-weight:bold;font-size:0.85em">{text}</span>'
@@ -105,6 +134,80 @@ def _status_badge(status: str) -> str:
 
 def _verdict_badge(verdict: str) -> str:
     return _colored_badge(verdict, VERDICT_COLOR.get(verdict, "#9e9e9e"))
+
+
+# ── Layer 2 reading formatter (FIX 4 + 7) ─────────────────────────────────────
+
+def _format_l2_reading(key: str, sig: dict) -> str:
+    """
+    Return a standardized "[Number/Direction] — [Plain English]" reading
+    for each Layer 2 signal key.
+    """
+    status = sig.get("status", "N/A")
+
+    if key == "copper_gold":
+        ratio = sig.get("ratio")
+        ma50  = sig.get("ma50")
+        if ratio and ma50 and ma50 != 0:
+            pct   = (ratio - ma50) / ma50 * 100
+            label = "Industrial demand signal" if status == "GREEN" else "Defensive rotation"
+            return f"{pct:+.1f}% vs 50d avg — {label}"
+
+    elif key == "silver_gold":
+        chg = sig.get("30d_chg_pct")
+        if chg is not None:
+            label = "Risk appetite present" if status == "GREEN" else "Defensive rotation"
+            return f"{chg:+.1f}% over 30d — {label}"
+
+    elif key == "gold_silver":
+        ratio = sig.get("current_reading", "—")
+        if status == "RED":
+            ctx = "Silver cheap vs gold (triggers at >80)"
+        elif status == "GREEN":
+            ctx = "Silver expensive vs gold"
+        else:
+            ctx = "Normal range (triggers above 80)"
+        return f"{ratio} — {ctx}"
+
+    elif key == "credit_spread":
+        chg = sig.get("30d_chg_pct")
+        if chg is not None:
+            label = "Credit stress — spreads widening" if status == "RED" else \
+                    "Mild spread widening — monitor" if status == "AMBER" else \
+                    "No credit stress"
+            return f"{chg:+.2f}% over 30d — {label}"
+
+    elif key == "put_call":
+        return "N/A — ^PCALL delisted from Yahoo. Alternative source needed"
+
+    elif key == "gold_oil":
+        ratio = sig.get("current_reading", "—")
+        trend = sig.get("trend", "")
+        chg   = sig.get("30d_chg")
+        chg_str = f" ({chg:+.1f}% 30d)" if chg is not None else ""
+        label = "Gold elevated vs oil — oil may outperform in 9-12mo (McClellan)"
+        return f"{ratio} {trend.capitalize()}{chg_str} — {label}"
+
+    elif key == "sput_nav":
+        pct = sig.get("premium_pct")
+        if pct is not None:
+            label = "Buying below NAV — attractive" if status == "GREEN" else \
+                    "Overpriced vs physical — avoid" if status == "RED" else \
+                    "Within normal range"
+            return f"{pct:+.2f}% vs NAV — {label}"
+        return "Manual input required"
+
+    elif key == "rsp_spy_breadth":
+        ratio = sig.get("ratio")
+        ma50  = sig.get("ma50")
+        if ratio and ma50 and ma50 != 0:
+            pct   = (ratio - ma50) / ma50 * 100
+            label = "Broad participation, healthy" if status == "GREEN" else \
+                    "Narrow mega-cap leadership, fragile rally"
+            return f"{pct:+.1f}% vs 50d avg — {label}"
+
+    # Fallback to raw reading
+    return str(sig.get("current_reading", "—"))
 
 
 # ── Section renderers ──────────────────────────────────────────────────────────
@@ -147,13 +250,22 @@ def render_sidebar(tech: dict, l2: dict, fund: list, verdicts: list):
             label_visibility="collapsed",
         )
 
+        # FIX 1 — Time frame selector
+        st.markdown("**Time Frame**")
+        timeframe = st.select_slider(
+            "Chart time frame",
+            options=_TF_OPTIONS,
+            value=_TF_DEFAULT,
+            label_visibility="collapsed",
+        )
+
         st.divider()
         st.markdown("**Signal Summary**")
         green_count = sum(1 for s in fund if s.get("status") == "GREEN")
         amber_count = sum(1 for s in fund if s.get("status") == "AMBER")
         red_count   = sum(1 for s in fund if s.get("status") == "RED")
-        l2_green = sum(1 for s in l2.values() if s.get("status") == "GREEN")
-        l2_red   = sum(1 for s in l2.values() if s.get("status") == "RED")
+        l2_green    = sum(1 for s in l2.values() if s.get("status") == "GREEN")
+        l2_red      = sum(1 for s in l2.values() if s.get("status") == "RED")
 
         col1, col2, col3 = st.columns(3)
         col1.metric("GREEN", green_count + l2_green, delta=None)
@@ -182,11 +294,13 @@ def render_sidebar(tech: dict, l2: dict, fund: list, verdicts: list):
         else:
             st.info("◯ No convergence active")
 
-    return section
+    return section, timeframe
 
 
-def render_macro(tech: dict, data: dict):
+def render_macro(tech: dict, data: dict, timeframe: str):
     st.markdown("## 1 — Macro Context")
+    tf_days = _timeframe_days(timeframe)
+
     items = [
         ("^TNX",     "10Y Yield",  "%",   lambda v: "GREEN" if v < 4.5 else "AMBER" if v < 5 else "RED"),
         ("DX-Y.NYB", "DXY",        "",    lambda v: "GREEN" if v < 100 else "AMBER" if v < 105 else "RED"),
@@ -195,30 +309,30 @@ def render_macro(tech: dict, data: dict):
     ]
     cols = st.columns(4)
     for col, (ticker, label, suffix, status_fn) in zip(cols, items):
-        r       = tech.get(ticker, {})
-        price   = r.get("price")
-        chg     = r.get("change_pct")
-        status  = status_fn(price) if price is not None else "N/A"
-        color   = STATUS_COLOR.get(status, "#9e9e9e")
+        r      = tech.get(ticker, {})
+        price  = r.get("price")
+        chg    = r.get("change_pct")
+        status = status_fn(price) if price is not None else "N/A"
+        color  = STATUS_COLOR.get(status, "#9e9e9e")
 
         with col:
             if price is not None:
                 st.metric(
-                    label=f"{label}",
+                    label=label,
                     value=f"{price:.2f}{suffix}",
                     delta=f"{chg:+.2f}%" if chg is not None else None,
                     delta_color="normal",
                 )
             else:
                 st.metric(label=label, value="N/A")
-            st.markdown(
-                _colored_badge(status, color),
-                unsafe_allow_html=True,
-            )
-            # Mini 30-day sparkline
+            st.markdown(_colored_badge(status, color), unsafe_allow_html=True)
+
+            # FIX 1 — sparkline respects selected timeframe
             df = data.get(ticker)
-            if df is not None and len(df) >= 5:
-                mini = df["Close"].tail(30)
+            if df is not None and len(df) >= 2:
+                n_rows = min(tf_days, len(df)) if tf_days else len(df)
+                n_rows = max(n_rows, 2)
+                mini = df["Close"].tail(n_rows)
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=list(range(len(mini))),
@@ -236,6 +350,7 @@ def render_macro(tech: dict, data: dict):
                     plot_bgcolor="rgba(0,0,0,0)",
                 )
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.caption(f"Sparklines showing {timeframe} window")
 
 
 def render_technical(tech: dict, prices: dict):
@@ -270,17 +385,14 @@ def render_technical(tech: dict, prices: dict):
         rsi_str   = f"{rsi_val:.0f}" if rsi_val else "—"
 
         rows.append({
-            "Market":  label,
-            "Ticker":  ticker,
-            "Price":   price_str,
-            "Chg %":   chg_str,
+            "Market":   label,
+            "Ticker":   ticker,
+            "Price":    price_str,
+            "Chg %":    chg_str,
             "vs 200MA": vs200,
-            "RSI":     rsi_str,
-            "MACD":    macd,
+            "RSI":      rsi_str,
+            "MACD":     macd,
             "_posture": posture,
-            "_chg":    chg or 0,
-            "_rsi":    rsi_val or 0,
-            "_vs200":  vs200,
         })
 
     df_display = pd.DataFrame(rows)
@@ -297,49 +409,65 @@ def render_technical(tech: dict, prices: dict):
         if val == "—":
             return "color:#9e9e9e"
         try:
-            return "color:#00c853" if float(val.replace("%","").replace("+","")) >= 0 else "color:#d50000"
+            return "color:#00c853" if float(val.replace("%", "").replace("+", "")) >= 0 else "color:#d50000"
         except Exception:
             return ""
 
     styled = (
-        df_display[["Market","Ticker","Price","Chg %","vs 200MA","RSI","MACD","_posture"]]
+        df_display[["Market", "Ticker", "Price", "Chg %", "vs 200MA", "RSI", "MACD", "_posture"]]
         .rename(columns={"_posture": "Posture"})
         .style
         .map(style_posture, subset=["Posture"])
-        .map(style_vs200,  subset=["vs 200MA"])
-        .map(style_chg,    subset=["Chg %"])
+        .map(style_vs200,   subset=["vs 200MA"])
+        .map(style_chg,     subset=["Chg %"])
     )
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
-def render_charts(data: dict, tech: dict):
+def render_charts(data: dict, tech: dict, timeframe: str):
     st.markdown("## 3 — Price Charts")
     all_tickers = sorted([t for tickers in TICKER_MAP.values() for t in tickers])
     default_idx = all_tickers.index("GLD") if "GLD" in all_tickers else 0
     ticker = st.selectbox("Select ticker", all_tickers, index=default_idx)
 
-    df = data.get(ticker)
-    if df is None or df.empty:
+    full_df = data.get(ticker)
+    if full_df is None or full_df.empty:
         st.warning(f"No data available for {ticker}")
         return
 
-    df = df.tail(90).copy()
+    # FIX 3 — Compute all MAs on the FULL dataset so 200MA is always valid.
+    # Then determine the display window from the timeframe.
+    closes_full = full_df["Close"]
+    ma20_full   = closes_full.rolling(20).mean()
+    ma50_full   = closes_full.rolling(50).mean()
+    ma200_full  = closes_full.rolling(200).mean()
+
+    # RSI on full dataset (Wilder EWM — same as tatum_indicators fallback)
+    delta_full    = closes_full.diff()
+    gain_full     = delta_full.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    loss_full     = (-delta_full.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    rsi_full      = 100 - (100 / (1 + gain_full / loss_full.replace(0, float("nan"))))
+
+    # Slice to display window
+    tf_days = _timeframe_days(timeframe)
+    if tf_days:
+        n = max(tf_days, 2)
+        df      = full_df.tail(n)
+        ma20    = ma20_full.tail(n)
+        ma50    = ma50_full.tail(n)
+        ma200   = ma200_full.tail(n)
+        rsi     = rsi_full.tail(n)
+    else:
+        df    = full_df
+        ma20  = ma20_full
+        ma50  = ma50_full
+        ma200 = ma200_full
+        rsi   = rsi_full
+
     closes = df["Close"]
-
-    # Moving averages
-    ma20  = closes.rolling(20).mean()
-    ma50  = closes.rolling(50).mean()
-    ma200 = closes.rolling(200).mean()
-
-    # RSI
-    delta  = closes.diff()
-    gain   = delta.clip(lower=0).rolling(14).mean()
-    loss   = (-delta.clip(upper=0)).rolling(14).mean()
-    rs     = gain / loss.replace(0, float("nan"))
-    rsi    = 100 - (100 / (1 + rs))
-
-    # ── Main price chart ───────────────────────────────────────────────────────
     has_ohlc = all(c in df.columns for c in ["Open", "High", "Low", "Close"])
+
+    # ── Main price + volume chart ──────────────────────────────────────────────
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -350,62 +478,55 @@ def render_charts(data: dict, tech: dict):
     if has_ohlc:
         fig.add_trace(go.Candlestick(
             x=df.index,
-            open=df["Open"],
-            high=df["High"],
-            low=df["Low"],
-            close=df["Close"],
+            open=df["Open"], high=df["High"],
+            low=df["Low"],   close=df["Close"],
             name=ticker,
             increasing_line_color="#00c853",
             decreasing_line_color="#d50000",
         ), row=1, col=1)
     else:
         fig.add_trace(go.Scatter(
-            x=df.index, y=closes,
-            mode="lines", name=ticker,
+            x=df.index, y=closes, mode="lines", name=ticker,
             line=dict(color="#69f0ae", width=1.5),
         ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
         x=df.index, y=ma20, mode="lines", name="MA20",
-        line=dict(color="#2196f3", width=1), opacity=0.8,
+        line=dict(color="#2196f3", width=1), opacity=0.85,
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=df.index, y=ma50, mode="lines", name="MA50",
-        line=dict(color="#ff9800", width=1), opacity=0.8,
+        line=dict(color="#ff9800", width=1), opacity=0.85,
     ), row=1, col=1)
+    # FIX 3 — MA200 always present (calculated from full history, displayed in window)
     fig.add_trace(go.Scatter(
         x=df.index, y=ma200, mode="lines", name="MA200",
-        line=dict(color="#f44336", width=1), opacity=0.8,
+        line=dict(color="#f44336", width=1.5), opacity=0.9,
     ), row=1, col=1)
 
-    # Volume bars
+    # Volume
     if "Volume" in df.columns and df["Volume"].sum() > 0:
+        opens = df["Open"] if "Open" in df.columns else closes
         vol_colors = [
             "#00c853" if c >= o else "#d50000"
-            for c, o in zip(df["Close"], df["Open"] if "Open" in df.columns else df["Close"])
+            for c, o in zip(df["Close"], opens)
         ]
         fig.add_trace(go.Bar(
             x=df.index, y=df["Volume"],
-            name="Volume",
-            marker_color=vol_colors,
-            opacity=0.6,
-            showlegend=False,
+            name="Volume", marker_color=vol_colors,
+            opacity=0.6, showlegend=False,
         ), row=2, col=1)
         fig.update_yaxes(title_text="Volume", row=2, col=1)
     else:
         fig.add_annotation(
-            text="Volume data unavailable",
-            xref="paper", yref="paper",
-            x=0.5, y=0.1, showarrow=False,
-            font=dict(color="#9e9e9e"),
-            row=2, col=1,
+            text="Volume data unavailable", xref="paper", yref="paper",
+            x=0.5, y=0.1, showarrow=False, font=dict(color="#9e9e9e"),
         )
 
     fig.update_layout(
-        title=f"{ticker} — 90 Day",
+        title=f"{ticker} — {timeframe}",
         height=520,
-        paper_bgcolor="#0e1117",
-        plot_bgcolor="#0e1117",
+        paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
         font=dict(color="#fafafa"),
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -415,20 +536,40 @@ def render_charts(data: dict, tech: dict):
     fig.update_yaxes(gridcolor="#1e2533", showgrid=True)
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── RSI chart ──────────────────────────────────────────────────────────────
+    # FIX 2 — RSI chart with labelled reference lines
     fig_rsi = go.Figure()
     fig_rsi.add_trace(go.Scatter(
         x=df.index, y=rsi, mode="lines", name="RSI(14)",
         line=dict(color="#ce93d8", width=1.5),
     ))
-    fig_rsi.add_hline(y=70, line=dict(color="#d50000", dash="dash", width=1), annotation_text="70")
-    fig_rsi.add_hline(y=30, line=dict(color="#00c853", dash="dash", width=1), annotation_text="30")
-    fig_rsi.add_hline(y=50, line=dict(color="#9e9e9e", dash="dot",  width=1), annotation_text="50")
+    # Overbought — red dashed
+    fig_rsi.add_hline(
+        y=70,
+        line=dict(color="#d50000", dash="dash", width=1),
+        annotation_text="Overbought (70)",
+        annotation_position="top right",
+        annotation_font=dict(color="#d50000", size=11),
+    )
+    # Oversold — green dashed
+    fig_rsi.add_hline(
+        y=30,
+        line=dict(color="#00c853", dash="dash", width=1),
+        annotation_text="Oversold (30)",
+        annotation_position="bottom right",
+        annotation_font=dict(color="#00c853", size=11),
+    )
+    # Convergence threshold — blue dotted
+    fig_rsi.add_hline(
+        y=50,
+        line=dict(color="#2196f3", dash="dot", width=1),
+        annotation_text="Convergence (50)",
+        annotation_position="top left",
+        annotation_font=dict(color="#2196f3", size=11),
+    )
     fig_rsi.update_layout(
         title=f"{ticker} — RSI (14)",
-        height=200,
-        paper_bgcolor="#0e1117",
-        plot_bgcolor="#0e1117",
+        height=220,
+        paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
         font=dict(color="#fafafa"),
         margin=dict(l=0, r=0, t=36, b=0),
         yaxis=dict(range=[0, 100], gridcolor="#1e2533"),
@@ -441,11 +582,10 @@ def render_charts(data: dict, tech: dict):
 def render_layer2(l2: dict):
     st.markdown("## 4 — Layer 2 Non-Traditional Signals")
     rows = []
-    for sig in l2.values():
+    for key, sig in l2.items():
         status  = sig.get("status", "N/A")
-        reading = str(sig.get("current_reading", "—"))
-        if sig.get("range_note"):
-            reading += f"  [{sig['range_note']}]"
+        # FIX 4 — standardized "[value] — [plain English]" reading
+        reading = _format_l2_reading(key, sig)
         rows.append({
             "Signal":         sig.get("name", "—"),
             "Reading":        reading,
@@ -549,7 +689,6 @@ def render_fundamental_verdicts(fund: list, verdicts: list):
                 f"_{v['rationale']}_"
             )
     else:
-        # Find closest-to-convergence asset (highest posture rank + lowest RSI)
         def _conv_score(v):
             posture_rank = {
                 "BULLISH": 5, "NEUTRAL-BULLISH": 4, "NEUTRAL": 3,
@@ -558,27 +697,30 @@ def render_fundamental_verdicts(fund: list, verdicts: list):
             rsi = v.get("rsi") or 100
             return posture_rank.get(v.get("technical_posture", "N/A"), 0) - rsi / 100
 
-        best = max(verdicts, key=_conv_score) if verdicts else None
-        gld_rsi = None
-        for v in verdicts:
-            if v.get("asset") == "Gold":
-                gld_rsi = v.get("rsi")
+        best    = max(verdicts, key=_conv_score) if verdicts else None
+        gld_rsi = next((v.get("rsi") for v in verdicts if v.get("asset") == "Gold"), None)
 
         msg = "No CONVERGENCE signals active.\n\nConvergence = Fundamental GREEN + Technical BULLISH + RSI < 50\n\n"
         if gld_rsi is not None:
-            msg += f"**Closest: Gold (GLD) — RSI {gld_rsi:.1f}** — one tick from CONVERGENCE threshold (needs RSI < 50 + BULLISH posture)"
+            msg += (
+                f"**Closest: Gold (GLD) — RSI {gld_rsi:.1f}** — "
+                "one tick from CONVERGENCE threshold (needs RSI < 50 + BULLISH posture)"
+            )
         elif best:
-            msg += f"Closest: **{best['asset']}** ({best['tech_ticker']}) — posture: {best.get('technical_posture','N/A')}, RSI: {best.get('rsi','N/A')}"
+            msg += (
+                f"Closest: **{best['asset']}** ({best['tech_ticker']}) — "
+                f"posture: {best.get('technical_posture','N/A')}, RSI: {best.get('rsi','N/A')}"
+            )
         st.info(msg)
 
 
 def render_ipo_tracker(venture: dict):
     st.markdown("## 6 — IPO Tracker (Venture)")
 
-    edgar  = venture.get("edgar", {})
-    forge  = venture.get("spacex_forge", {})
-    ant    = venture.get("anthropic", {})
-    ji     = venture.get("ji_moment", False)
+    edgar   = venture.get("edgar", {})
+    forge   = venture.get("spacex_forge", {})
+    ant     = venture.get("anthropic", {})
+    ji      = venture.get("ji_moment", False)
     wu_list = venture.get("wu_wei_entry", [])
 
     # Ji Moment banner
@@ -600,46 +742,55 @@ def render_ipo_tracker(venture: dict):
             + "\n\nPrice >20% below IPO open — Wu Wei entry conditions met."
         )
 
-    # SpaceX and Anthropic side-by-side
+    # FIX 5 — SpaceX and Anthropic cards always show data (defaults used on cloud)
     col_sx, col_ant = st.columns(2)
 
     with col_sx:
         st.markdown("### SpaceX (Forge)")
         forge_price = forge.get("current_price")
         price_str   = f"${forge_price:,.2f}" if forge_price else "N/A"
-        st.metric("Forge Secondary Price", price_str,
-                  delta=f"{forge.get('pct_change',0):+.1f}% vs prev" if forge.get("pct_change") else None)
+        st.metric(
+            "Forge Secondary Price", price_str,
+            delta=f"{forge.get('pct_change',0):+.1f}% vs prev" if forge.get("pct_change") else None,
+        )
+        ipo_target = forge.get("ipo_target", "")
+        if ipo_target:
+            st.caption(f"IPO target: {ipo_target}")
+        status_note = forge.get("status_note", "")
+        if status_note:
+            st.caption(status_note)
         if forge.get("stale"):
-            st.warning(f"⚠ STALE — manual update required\nReason: {forge.get('stale_reason','unknown')}")
+            st.warning(f"⚠ Baseline data — update forge_price_history.json locally\nLast updated: {forge.get('last_updated','?')}")
         else:
             st.caption(f"Updated: {forge.get('last_updated','?')}  |  Source: {forge.get('source','?')}")
 
     with col_ant:
         st.markdown("### Anthropic")
-        if "error" not in ant:
-            hiive = ant.get("last_known_hiive_price")
-            arr_b = (ant.get("last_known_arr") or 0) / 1e9
-            st.metric("Hiive Price", f"${hiive:,.2f}" if hiive else "N/A")
-            st.metric("ARR", f"${arr_b:.1f}B")
-            st.caption(
-                f"Valuation: {ant.get('valuation_range','N/A')}  |  "
-                f"IPO target: {ant.get('ipo_target','?')}  |  "
-                f"Verified: {ant.get('last_verified','?')} ({ant.get('age_days','?')} days ago)"
-            )
-            if ant.get("needs_update"):
-                st.warning(f"⚠ DATA IS {ant.get('age_days')} DAYS OLD — update anthropic_status.json")
-        else:
-            st.error(ant.get("error", "Unknown error"))
+        hiive = ant.get("last_known_hiive_price")
+        arr_b = (ant.get("last_known_arr") or 0) / 1e9
+        cc_arr_b = (ant.get("claude_code_arr") or 0) / 1e9
+        st.metric("Hiive Price", f"${hiive:,.2f}" if hiive else "N/A")
+        c1, c2 = st.columns(2)
+        c1.metric("Total ARR", f"${arr_b:.0f}B" if arr_b else "N/A")
+        c2.metric("Claude Code ARR", f"${cc_arr_b:.1f}B" if cc_arr_b else "N/A")
+        st.caption(
+            f"Valuation: {ant.get('valuation_range','N/A')}  |  "
+            f"IPO target: {ant.get('ipo_target','?')}  |  "
+            f"Verified: {ant.get('last_verified','?')}"
+        )
+        if ant.get("needs_update"):
+            st.warning(f"⚠ Data may be stale — update anthropic_status.json locally")
 
     # Pipeline table
     st.markdown("### Pre-IPO Pipeline")
     company_filings = {}
     for f in edgar.get("all_found", []):
-        name = f.get("tracked_as", "")
+        name     = f.get("tracked_as", "")
         existing = company_filings.get(name)
         if not existing or f.get("file_date", "") > existing.get("file_date", ""):
             company_filings[name] = f
 
+    pipeline_defaults = venture.get("pipeline_defaults", {})
     pipeline_rows = []
     for display_name, _ in TRACKED_COMPANIES:
         filing = company_filings.get(display_name)
@@ -653,69 +804,86 @@ def render_ipo_tracker(venture: dict):
                 "Company":    display_name,
                 "S-1 Status": s1_status,
                 "Filed":      filing.get("file_date", "—"),
-                "Accession":  filing.get("accession_no", "—"),
+                "Notes":      pipeline_defaults.get(display_name, "—"),
             })
         else:
             pipeline_rows.append({
                 "Company":    display_name,
                 "S-1 Status": "No S-1 detected",
                 "Filed":      "—",
-                "Accession":  "—",
+                "Notes":      pipeline_defaults.get(display_name, "—"),
             })
 
     st.dataframe(pd.DataFrame(pipeline_rows), use_container_width=True, hide_index=True)
 
     # EDGAR status
+    edgar_note = edgar.get("status_note", "")
     last_check = edgar.get("last_check", "never")
-    if last_check and last_check != "never":
+    if edgar_note:
+        st.caption(f"EDGAR: {edgar_note}")
+    elif last_check and last_check != "never":
         try:
             from datetime import datetime as _dt, timezone as _tz
-            ts = _dt.fromisoformat(last_check)
+            ts       = _dt.fromisoformat(last_check)
             age_days = (_dt.now(_tz.utc) - ts).days
         except Exception:
             age_days = "?"
+        st.caption(
+            f"EDGAR last check: {last_check}  |  "
+            f"Days since check: {age_days}  |  "
+            f"Lookback: {edgar.get('lookback_days','?')} days"
+        )
     else:
-        age_days = "?"
-    st.caption(
-        f"EDGAR last check: {last_check}  |  "
-        f"Days since check: {age_days}  |  "
-        f"Lookback: {edgar.get('lookback_days','?')} days"
-    )
+        st.caption("EDGAR: not yet checked this session")
 
 
 def render_outlook():
     st.markdown("## 7 — Outlook")
 
-    existing = ""
-    try:
-        if OUTLOOK_FILE.exists():
-            existing = OUTLOOK_FILE.read_text().strip()
-    except (OSError, PermissionError):
-        pass
+    writable = _fs_writable()
 
-    if existing:
-        st.markdown("**Current saved outlook:**")
-        st.markdown(existing)
+    # FIX 6 — Session state holds text during the session
+    if "outlook_text" not in st.session_state:
+        saved = ""
+        try:
+            if OUTLOOK_FILE.exists():
+                saved = OUTLOOK_FILE.read_text().strip()
+        except (OSError, PermissionError):
+            pass
+        st.session_state["outlook_text"] = saved
+
+    if st.session_state["outlook_text"]:
+        st.markdown("**Current outlook:**")
+        st.markdown(st.session_state["outlook_text"])
         st.divider()
 
     st.markdown("**Edit weekly Layer 5 outlook:**")
     st.markdown(
         "Include three posture lines: **OVERALL MARKET** | **NATURAL RESOURCES SLEEVE** | **IPO/PRE-IPO**"
     )
+
     new_text = st.text_area(
         "Weekly outlook",
-        value=existing,
+        value=st.session_state["outlook_text"],
         height=220,
+        key="outlook_textarea",
         label_visibility="collapsed",
     )
 
-    if st.button("💾 Save Outlook"):
-        try:
-            OUTLOOK_FILE.parent.mkdir(parents=True, exist_ok=True)
-            OUTLOOK_FILE.write_text(new_text.strip())
-            st.success("Outlook saved to data/layer5_outlook.txt")
-        except (OSError, PermissionError):
-            st.warning("Cannot save to disk on this environment — copy your text locally to preserve it.")
+    if writable:
+        if st.button("💾 Save Outlook"):
+            try:
+                OUTLOOK_FILE.parent.mkdir(parents=True, exist_ok=True)
+                OUTLOOK_FILE.write_text(new_text.strip())
+                st.session_state["outlook_text"] = new_text.strip()
+                st.success("Outlook saved to data/layer5_outlook.txt")
+            except (OSError, PermissionError):
+                st.warning("Write failed — filesystem may be read-only.")
+    else:
+        st.info(
+            "**Note:** On the cloud version, outlook text resets when the app restarts. "
+            "For persistent storage, write your outlook in the shared Google Drive document."
+        )
 
 
 def render_footer():
@@ -724,7 +892,7 @@ def render_footer():
         "<div style='text-align:center;color:#9e9e9e;font-size:0.85em'>"
         "Data source: yfinance &nbsp;|&nbsp; "
         "<strong>⚠ VERIFY ALL READINGS BEFORE ACTING</strong><br>"
-        "Dashboard v2.0 — Taoist CIO Team — Conscious Capital Wealth Management"
+        "Dashboard v2.1 — Taoist CIO Team — Conscious Capital Wealth Management"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -739,17 +907,16 @@ def main():
         data, prices, tech, l2, fund, verdicts, venture = load_all_data()
 
     render_header(timestamp)
-    section = render_sidebar(tech, l2, fund, verdicts)
+    section, timeframe = render_sidebar(tech, l2, fund, verdicts)
 
-    # Anchor mapping — render all sections but jump via query param
     sec_num = section.split("—")[0].strip()
 
     if sec_num == "1":
-        render_macro(tech, data)
+        render_macro(tech, data, timeframe)
     elif sec_num == "2":
         render_technical(tech, prices)
     elif sec_num == "3":
-        render_charts(data, tech)
+        render_charts(data, tech, timeframe)
     elif sec_num == "4":
         render_layer2(l2)
     elif sec_num == "5":
