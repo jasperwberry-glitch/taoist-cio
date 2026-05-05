@@ -327,12 +327,14 @@ def render_macro(tech: dict, data: dict, timeframe: str):
                 st.metric(label=label, value="N/A")
             st.markdown(_colored_badge(status, color), unsafe_allow_html=True)
 
-            # FIX 1 — sparkline respects selected timeframe
+            # Sparkline — auto-scale y-axis to the visible window
             df = data.get(ticker)
             if df is not None and len(df) >= 2:
                 n_rows = min(tf_days, len(df)) if tf_days else len(df)
                 n_rows = max(n_rows, 2)
                 mini = df["Close"].tail(n_rows)
+                lo, hi = mini.min(), mini.max()
+                pad = (hi - lo) * 0.05 if hi != lo else abs(hi) * 0.01 or 0.01
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=list(range(len(mini))),
@@ -345,7 +347,7 @@ def render_macro(tech: dict, data: dict, timeframe: str):
                     height=60,
                     margin=dict(l=0, r=0, t=0, b=0),
                     xaxis=dict(visible=False),
-                    yaxis=dict(visible=False),
+                    yaxis=dict(visible=False, range=[lo - pad, hi + pad]),
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
                 )
@@ -448,15 +450,15 @@ def render_charts(data: dict, tech: dict, timeframe: str):
     loss_full     = (-delta_full.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
     rsi_full      = 100 - (100 / (1 + gain_full / loss_full.replace(0, float("nan"))))
 
-    # Slice to display window
+    # Slice to display window (min 2 rows so 1D always draws a line)
     tf_days = _timeframe_days(timeframe)
     if tf_days:
         n = max(tf_days, 2)
-        df      = full_df.tail(n)
-        ma20    = ma20_full.tail(n)
-        ma50    = ma50_full.tail(n)
-        ma200   = ma200_full.tail(n)
-        rsi     = rsi_full.tail(n)
+        df    = full_df.tail(n)
+        ma20  = ma20_full.tail(n)
+        ma50  = ma50_full.tail(n)
+        ma200 = ma200_full.tail(n)
+        rsi   = rsi_full.tail(n)
     else:
         df    = full_df
         ma20  = ma20_full
@@ -464,8 +466,19 @@ def render_charts(data: dict, tech: dict, timeframe: str):
         ma200 = ma200_full
         rsi   = rsi_full
 
-    closes = df["Close"]
+    closes   = df["Close"]
     has_ohlc = all(c in df.columns for c in ["Open", "High", "Low", "Close"])
+
+    # Y-axis range: fit the visible window with 1.5% padding each side.
+    # Use High/Low when available (candlestick), else Close only.
+    if has_ohlc:
+        price_lo = df["Low"].min()
+        price_hi = df["High"].max()
+    else:
+        price_lo = closes.min()
+        price_hi = closes.max()
+    price_pad  = (price_hi - price_lo) * 0.015 if price_hi != price_lo else abs(price_hi) * 0.01 or 0.5
+    y_price_range = [price_lo - price_pad, price_hi + price_pad]
 
     # ── Main price + volume chart ──────────────────────────────────────────────
     fig = make_subplots(
@@ -534,6 +547,8 @@ def render_charts(data: dict, tech: dict, timeframe: str):
     )
     fig.update_xaxes(gridcolor="#1e2533", showgrid=True)
     fig.update_yaxes(gridcolor="#1e2533", showgrid=True)
+    # Lock price subplot to visible-data range; leave volume subplot free
+    fig.update_yaxes(range=y_price_range, row=1, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
     # FIX 2 — RSI chart with labelled reference lines
