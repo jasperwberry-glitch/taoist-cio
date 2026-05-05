@@ -55,8 +55,7 @@ TICKERS: dict[str, list[str]] = {
     "INTERNATIONAL":    ["EFA"],
     "BREADTH":          ["RSP"],
     "CREDIT":           ["HYG", "LQD"],
-    "MACRO":            ["^TNX", "DX-Y.NYB", "^VIX", "BZ=F", "GC=F", "SI=F", "HG=F"],
-    "SENTIMENT":        ["^PCALL"],
+    "MACRO":            ["^TNX", "DX-Y.NYB", "^VIX", "BZ=F", "GC=F", "SI=F", "HG=F", "^SKEW"],
     "IPO_PROXY":        ["ARKVX", "XOVR", "AMZN", "GOOGL"],
 }
 

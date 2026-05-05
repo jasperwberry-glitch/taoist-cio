@@ -9,7 +9,7 @@ Signals:
   2. Silver/Gold Ratio       — risk-on vs risk-off
   3. Gold/Silver Ratio       — historical cheap/expensive signal
   4. HY Credit Spread Proxy  — HYG/LQD 30-day price ratio
-  5. Put/Call Ratio          — ^PCALL (currently unavailable from Yahoo)
+  5. CBOE SKEW Index         — tail-risk / crash protection demand (replaces defunct ^PCALL)
   6. Gold/Oil Ratio          — McClellan forward-looking indicator
   7. SPUT NAV Premium/Disc.  — manual input required
 """
@@ -258,48 +258,54 @@ def _hy_credit_spread_proxy(data: dict) -> dict:
     )
 
 
-def _put_call_ratio(data: dict) -> dict:
+def _skew_index(data: dict) -> dict:
     """
-    Put/Call Ratio via ^PCALL.
-    >1.2  → RED   (extreme fear / potential bottom)
-    0.9–1.2 → AMBER
-    0.7–0.9 → NEUTRAL
-    <0.7  → GREEN (complacency / caution)
-
-    NOTE: ^PCALL is currently unavailable from Yahoo Finance.
-    Signal returns N/A with explanation.
+    CBOE SKEW Index (^SKEW) — measures demand for S&P 500 tail-risk protection.
+    Higher SKEW = market paying more for OTM puts = elevated crash concern.
+    >140  → RED   (extreme tail-risk demand)
+    130–140 → AMBER (elevated concern)
+    <130  → GREEN (normal; low crash-protection premium)
     """
-    name = "Put/Call Ratio (^PCALL)"
-    series = _close(data, "^PCALL")
+    name   = "CBOE SKEW Index (^SKEW)"
+    series = _close(data, "^SKEW")
 
     if series is None or series.empty:
         return _make_signal(
             name, "N/A",
-            ">1.2 RED | 0.9–1.2 AMBER | 0.7–0.9 NEUTRAL | <0.7 GREEN",
+            ">140 RED | 130–140 AMBER | <130 GREEN",
             "N/A",
-            "^PCALL delisted from Yahoo Finance. "
-            "Source manually from CBOE (cboe.com/data/volatility-indexes) "
-            "or replace with ^SKEW / CPCE.",
+            "^SKEW data unavailable from yfinance.",
         )
 
     current = float(series.iloc[-1])
-    if current > 1.2:
+    ma20    = float(series.tail(20).mean()) if len(series) >= 20 else float(series.mean())
+    vs_avg  = current - ma20
+
+    if current > 140:
         status = "RED"
-        interp = f"P/C ratio {current:.2f} — extreme fear. Potential contrarian buy signal."
-    elif current >= 0.9:
+        interp = (
+            f"SKEW at {current:.1f} — extreme tail-risk demand. "
+            f"Market heavily pricing in crash probability ({vs_avg:+.1f} vs 20-day avg). "
+            "Elevated put buying / protective hedging."
+        )
+    elif current >= 130:
         status = "AMBER"
-        interp = f"P/C ratio {current:.2f} — elevated caution."
-    elif current >= 0.7:
-        status = "NEUTRAL"
-        interp = f"P/C ratio {current:.2f} — normal range."
+        interp = (
+            f"SKEW at {current:.1f} — elevated tail-risk concern ({vs_avg:+.1f} vs 20-day avg). "
+            "Monitor for continued rise above 140."
+        )
     else:
         status = "GREEN"
-        interp = f"P/C ratio {current:.2f} — complacency. Monitor for reversal risk."
+        interp = (
+            f"SKEW at {current:.1f} — normal crash-protection demand ({vs_avg:+.1f} vs 20-day avg). "
+            "Low tail-risk premium; market not pricing unusual downside."
+        )
 
     return _make_signal(
-        name, round(current, 3),
-        ">1.2 RED | 0.9–1.2 AMBER | 0.7–0.9 NEUTRAL | <0.7 GREEN",
+        name, round(current, 1),
+        ">140 RED | 130–140 AMBER | <130 GREEN",
         status, interp,
+        {"ma20": round(ma20, 1), "vs_20d_avg": round(vs_avg, 1)},
     )
 
 
@@ -480,7 +486,7 @@ def get_layer2_signals(
         ("silver_gold",       lambda: _silver_gold_ratio(data)),
         ("gold_silver",       lambda: _gold_silver_ratio(data)),
         ("credit_spread",     lambda: _hy_credit_spread_proxy(data)),
-        ("put_call",          lambda: _put_call_ratio(data)),
+        ("skew_index",        lambda: _skew_index(data)),
         ("gold_oil",          lambda: _gold_oil_ratio(data)),
         ("sput_nav",          lambda: _sput_nav_premium(sput_nav_premium)),
         ("rsp_spy_breadth",   lambda: _rsp_spy_breadth(data)),

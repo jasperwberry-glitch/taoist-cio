@@ -177,8 +177,14 @@ def _format_l2_reading(key: str, sig: dict) -> str:
                     "No credit stress"
             return f"{chg:+.2f}% over 30d — {label}"
 
-    elif key == "put_call":
-        return "N/A — ^PCALL delisted from Yahoo. Alternative source needed"
+    elif key == "skew_index":
+        reading = sig.get("current_reading", "—")
+        vs_avg  = sig.get("vs_20d_avg")
+        vs_str  = f" ({vs_avg:+.1f} vs 20d avg)" if vs_avg is not None else ""
+        label   = "Extreme tail-risk demand — crash protection elevated" if status == "RED" else \
+                  "Elevated tail-risk concern — monitor" if status == "AMBER" else \
+                  "Normal crash-protection demand"
+        return f"{reading}{vs_str} — {label}"
 
     elif key == "gold_oil":
         ratio = sig.get("current_reading", "—")
