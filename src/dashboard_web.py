@@ -546,9 +546,14 @@ def render_charts(data: dict, tech: dict, timeframe: str):
         margin=dict(l=0, r=0, t=40, b=0),
     )
     fig.update_xaxes(gridcolor="#1e2533", showgrid=True)
-    fig.update_yaxes(gridcolor="#1e2533", showgrid=True)
-    # Lock price subplot to visible-data range; leave volume subplot free
-    fig.update_yaxes(range=y_price_range, row=1, col=1)
+    # Price axis — explicit range locked to visible window; autorange=False prevents override
+    fig.update_yaxes(
+        gridcolor="#1e2533", showgrid=True,
+        range=y_price_range, autorange=False,
+        row=1, col=1,
+    )
+    # Volume axis — let Plotly autorange freely
+    fig.update_yaxes(gridcolor="#1e2533", showgrid=True, row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
     # FIX 2 — RSI chart with labelled reference lines
